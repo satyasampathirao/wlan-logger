@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WLAN Logger</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1d2330; --muted: #6b7385; --line: #e3e6ec;
+    --accent: #2f6fde; --good: #1f9d55; --warn: #c98a07; --bad: #d33f3f; --new: #e8f5ec; --gone: #fbecec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1f28; --text: #e6e9ef; --muted: #8b93a5; --line: #2a313d;
+      --accent: #6a9cff; --good: #3cc47c; --warn: #e0a93a; --bad: #ef6b6b; --new: #173023; --gone: #3a1d1f;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 16px; border-bottom: 1px solid var(--line); background: var(--panel); }
+  h1 { font-size: 18px; margin: 0; }
+  .status { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .dot.live { background: var(--good); box-shadow: 0 0 0 0 var(--good); animation: pulse 1.6s infinite; }
+  .dot.err { background: var(--bad); }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(31,157,85,.5);} 100% { box-shadow: 0 0 0 8px rgba(31,157,85,0);} }
+  .spacer { flex: 1; }
+  button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  main { padding: 16px; display: grid; gap: 16px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  section h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 0; padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; }
+  .perm { grid-column: 1 / -1; }
+  .perm-list { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+  .perm-item { display: flex; align-items: center; gap: 8px; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .badge { font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--line); }
+  .badge.granted { background: var(--good); color: #fff; }
+  .badge.denied { background: var(--bad); color: #fff; }
+  .alert { margin: 0 14px 12px; padding: 10px 12px; border-radius: 8px; background: var(--gone); display: none; }
+  .alert a { color: var(--accent); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 7px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 12px; color: var(--muted); font-weight: 600; }
+  tr.new td { background: var(--new); }
+  td.mono, .mono { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px; }
+  .bar { display: inline-block; width: 70px; height: 8px; border-radius: 4px; background: var(--line); vertical-align: middle; margin-right: 6px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+  #log { max-height: 520px; overflow-y: auto; padding: 6px 0; margin: 0; list-style: none; }
+  #log li { padding: 4px 14px; border-bottom: 1px dashed var(--line); }
+  #log time { color: var(--muted); margin-right: 6px; }
+  .ev-up { color: var(--good); } .ev-down { color: var(--bad); } .ev-info { color: var(--muted); }
+  footer { padding: 0 16px 16px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WLAN Logger</h1>
+  <span class="status"><span id="dot" class="dot"></span><span id="statusText">Connecting...</span></span>
+  <span class="spacer"></span>
+  <span id="count" class="status"></span>
+  <button id="pauseBtn">Pause</button>
+  <button id="csvBtn">Download CSV</button>
+</header>
+
+<main>
+  <section class="perm">
+    <h2>Permissions <button id="grantAll" class="primary">Grant all</button></h2>
+    <div class="perm-list">
+      <div class="perm-item">Location <span id="p-geolocation" class="badge">unknown</span></div>
+      <div class="perm-item">Notifications <span id="p-notifications" class="badge">unknown</span></div>
+      <div class="perm-item">Keep screen awake <span id="p-wakelock" class="badge">off</span></div>
+    </div>
+    <div id="osAlert" class="alert">
+      <strong>Windows is blocking the Wi-Fi scan.</strong> Windows 11 requires Location access for Wi-Fi scanning.
+      Open <a href="ms-settings:privacy-location">Settings &rarr; Privacy &amp; security &rarr; Location</a>,
+      turn on <em>Location services</em> and <em>Let desktop apps access your location</em>. Scanning resumes automatically.
+      <div id="osAlertMsg" class="mono" style="margin-top:6px"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span>Networks in reach</span><span id="lastScan"></span></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>SSID</th><th>Signal</th><th>BSSID</th><th>Ch</th><th>Band</th><th>Radio</th><th>Security</th></tr></thead>
+        <tbody id="rows"><tr><td colspan="7">Waiting for first scan...</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <h2><span>Event log</span><button id="clearLog">Clear</button></h2>
+    <ul id="log"></ul>
+  </section>
+</main>
+<footer id="footer"></footer>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const known = new Map();      // bssid -> last network object
+const history = [];           // rows for CSV export
+let paused = false, wakeLock = null, position = null, firstScan = true;
+
+/* ---------- Permissions ---------- */
+function setBadge(id, state) {
+  const el = $(id);
+  el.textContent = state;
+  el.className = "badge " + (state === "granted" || state === "on" ? "granted" : state === "denied" ? "denied" : "");
+}
+
+async function watchPermission(name, badgeId) {
+  try {
+    const status = await navigator.permissions.query({ name });
+    setBadge(badgeId, status.state);
+    status.onchange = () => setBadge(badgeId, status.state);
+  } catch { /* Permissions API not available for this name */ }
+}
+
+function requestLocation() {
+  if (!("geolocation" in navigator)) return setBadge("p-geolocation", "unsupported");
+  navigator.geolocation.watchPosition(
+    (pos) => { position = pos.coords; setBadge("p-geolocation", "granted"); },
+    (err) => setBadge("p-geolocation", err.code === 1 ? "denied" : "unavailable"),
+    { enableHighAccuracy: true }
+  );
+}
+
+async function requestNotifications() {
+  if (!("Notification" in window)) return setBadge("p-notifications", "unsupported");
+  const result = await Notification.requestPermission();
+  setBadge("p-notifications", result === "default" ? "prompt" : result);
+}
+
+async function requestWakeLock() {
+  if (!("wakeLock" in navigator)) return setBadge("p-wakelock", "unsupported");
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    setBadge("p-wakelock", "on");
+    wakeLock.addEventListener("release", () => setBadge("p-wakelock", "off"));
+  } catch { setBadge("p-wakelock", "off"); }
+}
+
+async function requestAll() {
+  requestLocation();
+  await requestNotifications();
+  await requestWakeLock();
+}
+
+$("grantAll").onclick = requestAll;
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && wakeLock?.released) requestWakeLock();
+});
+watchPermission("geolocation", "p-geolocation");
+watchPermission("notifications", "p-notifications");
+// Ask for everything as soon as the page opens; the button is a fallback for
+// browsers that only allow prompts after a click.
+requestAll();
+
+/* ---------- Event log ---------- */
+function logEvent(text, cls = "ev-info") {
+  const li = document.createElement("li");
+  li.innerHTML = `<time>${new Date().toLocaleTimeString()}</time><span class="${cls}"></span>`;
+  li.querySelector("span").textContent = text;
+  $("log").prepend(li);
+  while ($("log").children.length > 500) $("log").lastChild.remove();
+}
+$("clearLog").onclick = () => ($("log").innerHTML = "");
+
+function notify(title, body) {
+  if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
+    new Notification(title, { body });
+  }
+}
+
+/* ---------- Rendering ---------- */
+function signalColor(s) { return s >= 70 ? "var(--good)" : s >= 40 ? "var(--warn)" : "var(--bad)"; }
+
+function render(networks, newSet) {
+  const tbody = $("rows");
+  tbody.innerHTML = "";
+  if (!networks.length) { tbody.innerHTML = '<tr><td colspan="7">No networks in reach.</td></tr>'; return; }
+  for (const n of [...networks].sort((a, b) => b.signal - a.signal)) {
+    const tr = document.createElement("tr");
+    if (newSet.has(n.bssid)) tr.className = "new";
+    const cells = [
+      n.ssid, null, n.bssid, n.channel, n.band, n.radio, [n.auth, n.encryption].filter(Boolean).join(" / ")
+    ];
+    cells.forEach((v, i) => {
+      const td = document.createElement("td");
+      if (i === 1) td.innerHTML = `<span class="bar"><i style="width:${n.signal}%;background:${signalColor(n.signal)}"></i></span>${n.signal}%`;
+      else td.textContent = v ?? "";
+      if (i === 2) td.className = "mono";
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  }
+}
+
+function handleScan(msg) {
+  $("osAlert").style.display = "none";
+  setStatus("live", "Live");
+  $("lastScan").textContent = "last scan " + new Date(msg.time).toLocaleTimeString();
+  $("count").textContent = `${msg.networks.length} BSSIDs / ${new Set(msg.networks.map(n => n.ssid)).size} SSIDs`;
+
+  const seen = new Set(), newSet = new Set();
+  for (const n of msg.networks) {
+    seen.add(n.bssid);
+    const prev = known.get(n.bssid);
+    if (!prev) {
+      newSet.add(n.bssid);
+      if (!firstScan) {
+        logEvent(`+ ${n.ssid} (${n.bssid}) appeared, ${n.signal}% ch ${n.channel}`, "ev-up");
+        notify("New Wi-Fi network", `${n.ssid} - ${n.signal}%`);
+      }
+    } else if (Math.abs(prev.signal - n.signal) >= 15) {
+      logEvent(`~ ${n.ssid} signal ${prev.signal}% -> ${n.signal}%`);
+    }
+    known.set(n.bssid, n);
+    history.push({ time: msg.time, lat: position?.latitude ?? "", lon: position?.longitude ?? "", ...n });
+  }
+  for (const [bssid, n] of known) {
+    if (!seen.has(bssid)) { logEvent(`- ${n.ssid} (${bssid}) out of reach`, "ev-down"); known.delete(bssid); }
+  }
+  if (firstScan) { logEvent(`Initial scan: ${msg.networks.length} networks in reach`); firstScan = false; }
+  render(msg.networks, firstScan ? new Set() : newSet);
+}
+
+function setStatus(kind, text) {
+  $("dot").className = "dot " + (kind === "live" ? "live" : kind === "err" ? "err" : "");
+  $("statusText").textContent = text;
+}
+
+/* ---------- Live stream ---------- */
+const source = new EventSource("/stream");
+source.onopen = () => setStatus("", "Connected, waiting for scan...");
+source.onerror = () => setStatus("err", "Disconnected from server - is server.py running?");
+source.onmessage = (e) => {
+  if (paused) return;
+  const msg = JSON.parse(e.data);
+  if (msg.type === "scan") handleScan(msg);
+  else if (msg.type === "error") {
+    setStatus("err", "Scan failed");
+    if (msg.kind === "location") {
+      $("osAlert").style.display = "block";
+      $("osAlertMsg").textContent = msg.message;
+    }
+    logEvent("Scan error: " + msg.message.split("\n")[0], "ev-down");
+  } else if (msg.type === "status") setStatus("", msg.message);
+};
+
+$("pauseBtn").onclick = () => {
+  paused = !paused;
+  $("pauseBtn").textContent = paused ? "Resume" : "Pause";
+  setStatus(paused ? "" : "live", paused ? "Paused" : "Live");
+  logEvent(paused ? "Logging paused" : "Logging resumed");
+};
+
+$("csvBtn").onclick = () => {
+  const cols = ["time", "ssid", "bssid", "signal", "channel", "band", "radio", "auth", "encryption", "lat", "lon"];
+  const esc = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+  const csv = [cols.join(","), ...history.map(r => cols.map(c => esc(r[c])).join(","))].join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
+  a.download = `wlan-log-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.csv`;
+  a.click();
+};
+
+fetch("/info").then(r => r.json()).then(info => {
+  $("footer").textContent = `Scanning every ${info.interval}s on ${info.platform}. Server-side log: ${info.logDir}`;
+}).catch(() => {});
+</script>
+</body>
+</html>
